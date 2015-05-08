@@ -1,0 +1,20 @@
+{
+  "name": "spacebox-common-native",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "node": "0.10.x"
+  },
+  "main": "main",
+  "dependencies": {
+    "debug": "~2.0.0",
+    "q": "~1.3.0",
+    "pg": "latest",
+    "pg-promise": "latest"
+  },
+  "jshintConfig": {
+    "node": true,
+    "newcap": false,
+    "asi": true
+  }
+}
