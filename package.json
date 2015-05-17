@@ -7,10 +7,11 @@
   },
   "main": "main",
   "dependencies": {
-    "debug": "~2.0.0",
+    "spacebox-common": "curzonj/spacebox-nodejs-common",
     "q": "~1.3.0",
     "pg": "latest",
-    "pg-promise": "latest"
+    "pg-promise": "latest",
+    "node-uuid": "latest"
   },
   "jshintConfig": {
     "node": true,
