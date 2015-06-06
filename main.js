@@ -4,6 +4,7 @@ var Q = require('q'),
     Context = require('spacebox-common/src/logging.js'),
     util = require('util'),
     pgpLib = require('pg-promise'),
+    pgp = pgpLib(/*options*/),
     uuidGen = require('node-uuid')
 
 Q.longStackSupport = true
@@ -28,16 +29,34 @@ function ConnectionWrapper(connection, ctx) {
     this.ctx = ctx
 }
 
+ConnectionWrapper.prototype.as = pgp.as
+
 ConnectionWrapper.prototype.assertTx = function() {
     if (this.ctx.tx_id === undefined)
         throw new Error("Query not in a transaction")
 }
 
 ConnectionWrapper.prototype.tracing = function(ctx, fn) {
-    if (this.ctx.id !== undefined)
+/* This is another option, but you might start getting
+ * duplicate context elements if you instrument twice
+ * with the same context. If you double instrument the
+ * db, it's probably a bug anyways.
+ *
+    var new_ctx = new Context(ctx)
+    new_ctx.extend(this.ctx)
+
+    var conn = new ConnectionWrapper(this.connection, new_ctx)
+*/
+    if (this.ctx.db_default !== true)
         throw new Error("This connection already has tracing")
 
-    return fn(new ConnectionWrapper(this.connection, ctx))
+    var conn = new ConnectionWrapper(this.connection, ctx)
+
+    if (fn !== undefined) {
+      return fn(conn)
+    } else {
+      return conn
+    }
 }
 
 var tx_counter = 0
@@ -80,13 +99,16 @@ var query_counter = 0
 var forwardFns = [ 'one', 'oneOrNone', 'none', 'query', 'any', 'many' ]
 forwardFns.forEach(function(name) {
     ConnectionWrapper.prototype[name]= function(qstring) {
-        var self = this
+        var self = this,
+            scopedError = new Error("hung query: "+qstring)
 
         query_counter = query_counter + 1
         var uuid = query_counter,
             interval_id = setInterval(function() {
                 self.ctx.debug('psql', "query_id="+uuid+" query is blocked, still running")
                 console.log('psql', "query_id="+uuid+" query is blocked, still running")
+
+                throw scopedError
         }, 1000)
 
         self.ctx.debug('psql', "query_id="+uuid+" "+qstring)
@@ -101,12 +123,13 @@ forwardFns.forEach(function(name) {
 
 var self = {
     db_select: function(name) {
-        var pgp = pgpLib(/*options*/)
         var database_url =
             process.env.DATABASE_URL ||
             process.env[name.toUpperCase()+'_DATABASE_URL']
 
-        self.db = new ConnectionWrapper(pgp(database_url), new Context())
+        var ctx =  new Context()
+        ctx.db_default = true
+        self.db = new ConnectionWrapper(pgp(database_url), ctx)
     }
 }
 
