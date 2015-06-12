@@ -9,9 +9,13 @@
   "dependencies": {
     "spacebox-common": "curzonj/spacebox-nodejs-common",
     "q": "~1.3.0",
+    "hiredis": "latest",
+    "redis": "latest",
+    "promise-redis": "latest",
     "pg": "latest",
-    "pg-promise": "latest",
-    "node-uuid": "latest"
+    "pg-promise": "curzonj/pg-promise",
+    "node-uuid": "latest",
+    "generic-pool": "latest"
   },
   "jshintConfig": {
     "node": true,
