@@ -4,6 +4,8 @@ var ConnectionWrapper = require('./lib/pg-wrapper'),
     C = require("spacebox-common"),
     Q = require("q")
 
+var logger
+
 var self = module.exports = {
     db_select: function(name) {
         var database_url =
@@ -18,35 +20,26 @@ var self = module.exports = {
         var rtg   = require("url").parse(process.env.REDIS_URL)
         var redis = redisLib.createClient(rtg.port, rtg.hostname)
 
+        if (logger === undefined)
+            logger = C.logging.create()
+
+        var port
+        redis.on("error", function (err) {
+            logger.info({ err: err, scope: 'redis' }, "connection error")
+        });
+
+        redis.on("end", function () {
+            logger.info({ scope: 'redis', port: port }, "connection closed");
+        });
+
+        redis.on("ready", function () {
+            port = redis.stream.localPort
+            logger.info({ scope: 'redis', port: port }, "connection opened");
+        });
+
         if (rtg.auth !== null)
             redis.auth(rtg.auth.split(":")[1]);
 
         return redis
-    },
-    defineSystemMetrics: function() {
-        C.stats.defineAll({
-            memoryRss: 'histogram',
-            memoryHeapTotal: 'histogram',
-            memoryHeapUsed: 'histogram',
-            schedulingJitter: 'histogram',
-        })
-
-        var lastRun
-        setInterval(function() {
-            if (lastRun === undefined) {
-                lastRun = Date.now()
-            } else {
-                var thisRun = Date.now()
-                C.stats.schedulingJitter.update(lastRun + 500 - thisRun)
-                lastRun = thisRun
-            }
-
-            var usage = process.memoryUsage()
-            C.stats.memoryRss.update(usage.rss)
-            C.stats.memoryHeapTotal.update(usage.heapTotal)
-            C.stats.memoryHeapUsed.update(usage.heapUsed)
-        }, 500)
     }
 }
-
-self.defineSystemMetrics()
