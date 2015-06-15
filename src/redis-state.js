@@ -3,7 +3,8 @@
 var Q = require("q"),
     C = require("spacebox-common"),
     buildRedis = require('../main').buildRedis,
-    merge = require('./state_merge')
+    merge = require('./state_merge'),
+    WTF = require('wtf-shim')
 
 var listeners = [],
     currentTick,
@@ -34,6 +35,7 @@ var self = module.exports = {
 
         var workerAlive = false
         function processMessage() {
+            var range = WTF.trace.beginTimeRange('processMessage')
             var timer = C.stats.processRedisMessage.start()
 
             Q.fcall(function() {
@@ -47,6 +49,8 @@ var self = module.exports = {
                 } else {
                     workerAlive = false
                 }
+
+                WTF.trace.endTimeRange(range)
             }).fail(function(e) {
                 C.logging.defaultCtx().error({ err: e }, "failed to process redis message")
             }).done()
@@ -68,19 +72,34 @@ var self = module.exports = {
     loadWorld: function() {
         var worldLoaded = Q.defer()
 
+        var merge_changes_t = WTF.trace.events.createScope('merge_changes')
+        var world_tickers_t = WTF.trace.events.createScope('promise_world_tickers')
+        var await_redis_t = WTF.trace.events.createScope('processMessage')
+        var complete_t = WTF.trace.events.createInstance('redis_completed')
         self.subscribe(function(blob) {
             var msg = JSON.parse(blob)
-            return worldLoaded.promise.then(function() {
+            var await_scope = await_redis_t()
+
+            var p = worldLoaded.promise.then(function() {
                 currentTick = msg.ts
 
+                var scope = merge_changes_t()
                 Object.keys(msg.changes).forEach(function(uuid) {
                     merge.apply(worldStateStorage, uuid, msg.changes[uuid])
                 })
+                WTF.trace.leaveScope(scope)
 
-                return Q.all(listeners.map(function(h) {
-                    return h.onWorldTick(msg)
-                }))
+                return WTF.fn(function() {
+                    return Q.all(listeners.map(function(h) {
+                        return h.onWorldTick(msg)
+                    }))
+                }, world_tickers_t)
+            }).then(function() {
+                WTF.trace.leaveScope(await_scope)
+                complete_t()
             })
+            
+            return p
         })
     
         // we need to start receiving messages before we load state,
