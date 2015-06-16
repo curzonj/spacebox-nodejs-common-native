@@ -125,15 +125,21 @@ var self = module.exports = {
         return function(msg) {
             var scope
             var message_scope = message_t()
+            var deleted = {}
 
             scope = merge_changes_t()
-            Object.keys(msg.changes).forEach(function(uuid) {
-                merge.apply(worldStateStorage, uuid, msg.changes[uuid])
+            var change_keys = Object.keys(msg.changes)
+            change_keys.forEach(function(uuid) {
+                var patch = msg.changes[uuid]
+                if (patch.tombstone === true)
+                    deleted[uuid] = worldStateStorage[uuid]
+
+                merge.apply(worldStateStorage, uuid, patch)
             })
             WTF.trace.leaveScope(scope)
 
             scope = world_tickers_t()
-            self.events.emit('worldtick', msg)
+            self.events.emit('worldtick', msg, deleted)
             WTF.trace.leaveScope(scope)
 
             completedTick = msg.ts
@@ -205,6 +211,10 @@ var self = module.exports = {
             uuid: uuid,
             patch: patch
         }))
+    },
+    getP: function(uuid) {
+        // Just to make some old code work
+        return Q(self.get(uuid))
     },
     get: function(uuid) {
         C.assertUUID(uuid)
