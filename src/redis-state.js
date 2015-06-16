@@ -2,13 +2,19 @@
 
 var Q = require("q"),
     C = require("spacebox-common"),
-    buildRedis = require('../main').buildRedis,
+    buildRedis = require('./main').buildRedis,
+    EventEmitter = require('events').EventEmitter,
     merge = require('./state_merge'),
+    zlib = require('zlib'),
     WTF = require('wtf-shim')
 
-var listeners = [],
-    currentTick,
+var queue = [],
+    completedTick = 0,
+    worldLoaded = false,
+    workerAlive = false,
     worldStateStorage = {}
+
+var logger = C.logging.defaultCtx()
 
 var sharedRedis
 function getSharedRedis() {
@@ -20,32 +26,84 @@ function getSharedRedis() {
 
 // This won't work for multiple subscriptions, but we currently
 // only have one.
-var queue = []
 C.stats.define('subscriptionQueueLength', 'gauge', function() {
     return queue.length
 })
 
 C.stats.defineAll({
-    processRedisMessage: 'timer'
+    processRedisMessage: 'timer',
+    tickDelay: 'histogram',
 })
 
 var self = module.exports = {
-    subscribe: function(cb) {
-        var redis = buildRedis()
+    events: new EventEmitter(),
+    waitForTick: function(ctx, ts, timeout) {
+        ctx.debug({
+            ts: ts, timeout: timeout, completedTick: completedTick, type: (typeof ts),
+        }, 'waitForTick')
 
-        var workerAlive = false
-        function processMessage() {
+        if (typeof ts !== 'number')
+            throw new Error("invalid timestamp")
+
+        if (ts <= completedTick)
+            return Q(null)
+
+        if (timeout === undefined)
+            timeout = 120 // ms
+
+        var started_at = Date.now()
+        return Q.Promise(function(resolve, reject) {
+            function onTick(completedTick, delay) {
+                if (!resolve)
+                    return
+
+                if (ts <= completedTick) {
+                    resolve(delay)
+                    reject = null
+                } else {
+                    self.events.once('tick', onTick)
+                }
+            }
+           
+            setTimeout(function() {
+                if (!reject)
+                    return
+
+                reject('waitForTick timeout')
+                resolve = null
+            }, timeout)
+
+            self.events.once('tick', onTick)
+        }).then(function(delay) {
+            ctx.debug({ ts: ts, delayed: delay, waited: Date.now() - started_at }, 'waitForTick:resolved')
+        })
+    },
+    processMessage: function() {
+        var process_t = WTF.trace.events.createScope('processMessage')
+        var unzip_t = WTF.trace.events.createScope('processMessage:gunzip(int32 length)')
+    
+        return function() {
             var range = WTF.trace.beginTimeRange('processMessage')
+            var scope = process_t()
             var timer = C.stats.processRedisMessage.start()
 
             Q.fcall(function() {
-                return cb(queue.shift())
+                var content = queue.shift()
+                //logger.trace({ content_length: content.length }, 'gunzip message')
+
+                var gzip_scope = unzip_t(content.length)
+                return Q.nfcall(zlib.gunzip, content).
+                tap(function() {
+                    WTF.trace.leaveScope(gzip_scope)
+                })
+            }).then(function(decompressed) {
+                var msg = JSON.parse(decompressed)
+                return self.onWorldTick(msg)
             }).fin(function() {
                 timer.end()
 
-                if (queue.length > 0) {
-                    //setTimeout(processMessage, 2)
-                    process.nextTick(processMessage)
+                if (queue.length > 0 && worldLoaded) {
+                    process.nextTick(self.processMessage)
                 } else {
                     workerAlive = false
                 }
@@ -54,60 +112,87 @@ var self = module.exports = {
             }).fail(function(e) {
                 C.logging.defaultCtx().error({ err: e }, "failed to process redis message")
             }).done()
+
+            WTF.trace.leaveScope(scope)
         }
-
-        redis.on("message", function(channel, blob) {
-            queue.push(blob)
-
-            if (!workerAlive) {
-                workerAlive = true
-                process.nextTick(processMessage)
-                //setTimeout(processMessage, 2)
-            }
-        })
-
-        redis.subscribe("worldstate")
-    },
-
-    loadWorld: function() {
-        var worldLoaded = Q.defer()
-
+    }(),
+    onWorldTick: function(msg) {
         var merge_changes_t = WTF.trace.events.createScope('merge_changes')
         var world_tickers_t = WTF.trace.events.createScope('promise_world_tickers')
-        var await_redis_t = WTF.trace.events.createScope('processMessage')
-        var complete_t = WTF.trace.events.createInstance('redis_completed')
-        self.subscribe(function(blob) {
-            var msg = JSON.parse(blob)
-            var await_scope = await_redis_t()
+        var message_t = WTF.trace.events.createScope('subscribe:onMessage')
 
-            var p = worldLoaded.promise.then(function() {
-                currentTick = msg.ts
 
-                var scope = merge_changes_t()
-                Object.keys(msg.changes).forEach(function(uuid) {
-                    merge.apply(worldStateStorage, uuid, msg.changes[uuid])
-                })
-                WTF.trace.leaveScope(scope)
+        return function(msg) {
+            var scope
+            var message_scope = message_t()
 
-                return WTF.fn(function() {
-                    return Q.all(listeners.map(function(h) {
-                        return h.onWorldTick(msg)
-                    }))
-                }, world_tickers_t)
-            }).then(function() {
-                WTF.trace.leaveScope(await_scope)
-                complete_t()
+            scope = merge_changes_t()
+            Object.keys(msg.changes).forEach(function(uuid) {
+                merge.apply(worldStateStorage, uuid, msg.changes[uuid])
             })
-            
-            return p
-        })
-    
-        // we need to start receiving messages before we load state,
-        // but we have to wait to apply them until afterwards
-        return merge.loadFromRedis(getSharedRedis(), worldStateStorage).
+            WTF.trace.leaveScope(scope)
+
+            scope = world_tickers_t()
+            self.events.emit('worldtick', msg)
+            WTF.trace.leaveScope(scope)
+
+            completedTick = msg.ts
+            var delay = Date.now() - completedTick
+            C.stats.tickDelay.update(delay)
+
+            self.events.emit('tick', msg.ts, delay)
+            WTF.trace.leaveScope(message_scope)
+        }
+    }(),
+    loaded: function() {
+        return worldLoaded
+    },
+    subscribe: function() {
+        var received_t = WTF.trace.events.createInstance('redis#received_message')
+        
+        return function() {
+            var redis = buildRedis()
+
+            redis.on("end", function () {
+                worldLoaded = false
+                worldStateStorage = {}
+                completedTick = 0
+
+                self.events.emit('worldreset')
+                // redis client will reconnect
+                // and that will trigger another
+                // worldload
+            })
+
+            redis.on('ready', function() {
+                self.loadFromRedis()
+            })
+
+            redis.on("message", function(channel, blob) {
+                received_t()
+                queue.push(blob)
+
+                if (!workerAlive && worldLoaded) {
+                    workerAlive = true
+                    process.nextTick(self.processMessage)
+                }
+            })
+
+            redis.subscribe("worldstate")
+            logger.debug("subscribed to worldstate")
+        }
+    }(),
+    loadFromRedis: function() {
+        var redis = getSharedRedis()
+        merge.loadFromRedis(redis, worldStateStorage).
         then(function() {
-            worldLoaded.resolve()
-        })
+            worldLoaded = true
+            if (queue.length > 0)
+                process.nextTick(self.processMessage)
+
+            logger.debug("loaded world state")
+            self.events.emit('worldloaded')
+        }).done()
     },
 
     queueChangeIn: function(uuid, patch) {
@@ -126,19 +211,11 @@ var self = module.exports = {
 
         return worldStateStorage[uuid]
     },
-    addListener: function(l) {
-        listeners.push(l)
-    },
-    removeListener: function(l) {
-        var index = listeners.indexOf(l)
-        listeners.splice(index, 1)
-    },
 
-    currentTick: function() {
-        return currentTick
+    completedTick: function() {
+        return completedTick
     },
     getAllKeys: function() {
         return worldStateStorage
     },
-
 }

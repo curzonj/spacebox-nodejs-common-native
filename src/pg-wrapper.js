@@ -11,8 +11,6 @@ var Q = require('q'),
 pg.defaults.poolLog = false
 pg.defaults.poolIdleTimeout = 300000
 
-Q.longStackSupport = true
-
 var this_cn, pool
 var pgp = pgpLib({
     promiseLib: Q,

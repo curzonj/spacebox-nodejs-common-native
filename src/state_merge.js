@@ -1,6 +1,7 @@
 'use strict';
 
 var Q = require('q'),
+    zlib = require('zlib'),
     deepMerge = require('spacebox-common/src/deepMerge')
 
 module.exports = {
@@ -21,6 +22,11 @@ module.exports = {
     loadFromRedis: function(redis, storage) {
         return redis.get("worldstate").
         then(function(data) {
+            if (data === null)
+                return null
+
+            return Q.nfcall(zlib.gunzip, data)
+        }).then(function(data) {
             if (data === null)
                 return
 

@@ -1,8 +1,10 @@
 'use strict';
 
-var ConnectionWrapper = require('./lib/pg-wrapper'),
+var ConnectionWrapper = require('./pg-wrapper'),
     C = require("spacebox-common"),
     Q = require("q")
+
+Q.longStackSupport = true
 
 var logger
 
@@ -14,22 +16,28 @@ var self = module.exports = {
 
         self.db = new ConnectionWrapper.build(database_url)
     },
-    buildRedis: function() {
+    buildRedis: function(options) {
         var redisLib = require('promise-redis')(Q.Promise)
 
+        if (!options)
+            options = {}
+
+        options.retry_max_delay = 5000 // TODO configurable
+        options.return_buffers = true
+
         var rtg   = require("url").parse(process.env.REDIS_URL)
-        var redis = redisLib.createClient(rtg.port, rtg.hostname)
+        var redis = redisLib.createClient(rtg.port, rtg.hostname, options)
 
         if (logger === undefined)
             logger = C.logging.create()
 
         var port
         redis.on("error", function (err) {
-            logger.info({ err: err, scope: 'redis' }, "connection error")
+            logger.error({ err: err, scope: 'redis', port: port }, "connection error")
         });
 
         redis.on("end", function () {
-            logger.info({ scope: 'redis', port: port }, "connection closed");
+            logger.warn({ scope: 'redis', port: port }, "connection closed");
         });
 
         redis.on("ready", function () {
