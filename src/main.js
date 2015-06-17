@@ -6,17 +6,18 @@ var ConnectionWrapper = require('./pg-wrapper'),
 
 Q.longStackSupport = true
 
-var logger
-
 var self = module.exports = {
-    db_select: function(name) {
+    db_select: function(name, ctx) {
         var database_url =
             process.env.DATABASE_URL ||
             process.env[name.toUpperCase()+'_DATABASE_URL']
 
-        self.db = new ConnectionWrapper.build(database_url)
+        return new ConnectionWrapper.build(database_url, ctx)
     },
-    buildRedis: function(options) {
+    buildRedis: function(logger, options) {
+        if (logger === undefined)
+            throw new Error("missing parameters")
+
         var redisLib = require('promise-redis')(Q.Promise)
 
         if (!options)
@@ -27,9 +28,6 @@ var self = module.exports = {
 
         var rtg   = require("url").parse(process.env.REDIS_URL)
         var redis = redisLib.createClient(rtg.port, rtg.hostname, options)
-
-        if (logger === undefined)
-            logger = C.logging.create()
 
         var port
         redis.on("error", function (err) {

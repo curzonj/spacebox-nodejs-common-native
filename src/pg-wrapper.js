@@ -44,6 +44,9 @@ function ConnectionWrapper(connection, ctx) {
     this.connection = connection
     this.ctx = ctx
 
+    if (ctx === undefined)
+        throw new Error("missing context")
+
     extensions.forEach(function(ext) {
         var stuff = ext(this)
         for (var k in stuff) {
@@ -56,8 +59,7 @@ ConnectionWrapper.extend = function(obj) {
     extensions.push(obj)
 }
 
-ConnectionWrapper.build = function(cn) {
-    var ctx =  logging.create()
+ConnectionWrapper.build = function(cn, ctx) {
     ctx.db_default = true
 
     this_cn = cn
@@ -121,16 +123,15 @@ ConnectionWrapper.prototype.tx = function(fn) {
         tx_counter = tx_counter + 1
         var uuid = tx_counter
 
-        return self.ctx.old_log_with(function(ctx) {
-            ctx.tx_id = uuid
+        var ctx = self.ctx.child({ tx: uuid })
+        ctx.tx_id = uuid
 
-            return Q(self.connection.tx(function(tx) {
-                ctx.debug('psql', "transaction open")
-                return fn(new ConnectionWrapper(tx, ctx))
-            })).fin(function() {
-                ctx.debug('psql', "transaction closed")
-            })
-        }, [ 'tx='+uuid ], 'psql')
+        return Q(self.connection.tx(function(tx) {
+            ctx.debug("transaction open")
+            return fn(new ConnectionWrapper(tx, ctx))
+        })).fin(function() {
+            ctx.debug("transaction closed")
+        })
     } else {
         // Don't second guess the actual library, it'll won't open
         // a new transaction if it doesn't need to, but don't generate
