@@ -130,8 +130,12 @@ module.exports = function(logger) {
                 var change_keys = Object.keys(msg.changes)
                 change_keys.forEach(function(uuid) {
                     var patch = msg.changes[uuid]
-                    if (patch.tombstone === true)
-                        deleted[uuid] = worldStateStorage[uuid]
+                    logger.trace({ patch: patch }, "received")
+
+                    if (patch.tombstone === true) {
+                        var deleted = deleted[uuid] = worldStateStorage[uuid]
+                        logger.trace({ deleted: deleted }, 'full tombstone object')
+                    }
 
                     merge.apply(worldStateStorage, uuid, patch)
                 })
