@@ -133,8 +133,8 @@ module.exports = function(logger) {
                     logger.trace({ patch: patch }, "received")
 
                     if (patch.tombstone === true) {
-                        var deleted = deleted[uuid] = worldStateStorage[uuid]
-                        logger.trace({ deleted: deleted }, 'full tombstone object')
+                        var old = deleted[uuid] = worldStateStorage[uuid]
+                        logger.trace({ deleted: old }, 'full tombstone object')
                     }
 
                     merge.apply(worldStateStorage, uuid, patch)
@@ -173,10 +173,6 @@ module.exports = function(logger) {
                     // worldload
                 })
 
-                redis.on('ready', function() {
-                    self.loadFromRedis()
-                })
-
                 redis.on("message", function(channel, blob) {
                     received_t()
                     queue.push(blob)
@@ -187,8 +183,11 @@ module.exports = function(logger) {
                     }
                 })
 
-                redis.subscribe("worldstate")
-                logger.debug("subscribed to worldstate")
+                redis.on('ready', function() {
+                    redis.subscribe("worldstate")
+                    logger.debug("subscribed to worldstate")
+                    self.loadFromRedis()
+                })
             }
         }(),
         loadFromRedis: function() {
