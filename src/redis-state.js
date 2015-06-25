@@ -10,6 +10,7 @@ var Q = require("q"),
 
 module.exports = function(logger) {
     var queue = [],
+        worldPromises = [],
         completedTick = 0,
         worldLoaded = false,
         workerAlive = false,
@@ -36,6 +37,50 @@ module.exports = function(logger) {
 
     var self = {
         events: new EventEmitter(),
+        wait_for_world: function(opts) {
+            logger.info(opts, "waiting for world")
+
+            return ctx.wait_for_world_fn(function (data) {
+                return C.find(data, opts, false)
+            })
+        },
+        wait_for_world_fn: function(fn) {
+            var result = fn(ctx.world)
+
+            if (result !== undefined && result !== false) {
+                return Q(result)
+            } else {
+                var deferred = Q.defer()
+
+                worldPromises.push({
+                    fn: fn,
+                    promise: deferred,
+                    expires_at: Date.now() + 500, // 500ms timeout
+                })
+
+                return deferred.promise
+            }
+        },
+        checkWorldPromises: function(msg, deleted) {
+            if (worldPromises.length > 0) {
+                var now = Date.now()
+                msg.changes.forEach(function(state) {
+                    var fake = {}
+                    fake[state.key] = worldStateStorage[state.key] || deleted[state.key]
+
+                    worldPromises.forEach(function(pair, i) {
+                        var result = pair.fn(fake)
+                        if (result !== undefined && result !== false) {
+                            pair.promise.resolve(result)
+                            worldPromises.splice(i, 1)
+                        } else if (pair.expires_at <= now) {
+                            pair.promise.reject('timeout')
+                            worldPromises.splice(i, 1)
+                        }
+                    })
+                })
+            }
+        },
         waitForTick: function(ctx, ts, timeout) {
             ctx.debug({
                 ts: ts, timeout: timeout, completedTick: completedTick, type: (typeof ts),
@@ -231,6 +276,11 @@ module.exports = function(logger) {
             return worldStateStorage
         },
     }
+
+    self.events.on('worldtick', self.checkWorldPromises)
+    self.events.on('worldloaded', function() {
+        worldPromises = []
+    })
 
     return self
 }
