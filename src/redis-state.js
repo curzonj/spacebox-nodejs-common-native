@@ -187,7 +187,11 @@ module.exports = function(logger) {
                 WTF.trace.leaveScope(scope)
 
                 scope = world_tickers_t()
-                self.events.emit('worldtick', msg, deleted)
+                try {
+                    self.events.emit('worldtick', msg, deleted)
+                } catch(e) {
+                    logger.fatal({ err: e }, 'failed worktick event')
+                }
                 WTF.trace.leaveScope(scope)
 
                 completedTick = msg.ts
