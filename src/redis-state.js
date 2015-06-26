@@ -1,12 +1,13 @@
 'use strict';
 
-var Q = require("q"),
-    C = require("spacebox-common"),
-    buildRedis = require('./main').buildRedis,
-    EventEmitter = require('events').EventEmitter,
-    merge = require('./state_merge'),
-    zlib = require('zlib'),
-    WTF = require('wtf-shim')
+var Q = require("q")
+var C = require("spacebox-common")
+var buildRedis = require('./main').buildRedis
+var EventEmitter = require('events').EventEmitter
+var merge = require('./state_merge')
+var zlib = require('zlib')
+var uuidGen = require('node-uuid')
+var WTF = require('wtf-shim')
 
 module.exports = function(logger) {
     var queue = [],
@@ -40,12 +41,12 @@ module.exports = function(logger) {
         wait_for_world: function(opts) {
             logger.info(opts, "waiting for world")
 
-            return ctx.wait_for_world_fn(function (data) {
+            return self.wait_for_world_fn(function (data) {
                 return C.find(data, opts, false)
             })
         },
         wait_for_world_fn: function(fn) {
-            var result = fn(ctx.world)
+            var result = fn(worldStateStorage)
 
             if (result !== undefined && result !== false) {
                 return Q(result)
@@ -80,47 +81,6 @@ module.exports = function(logger) {
                     })
                 })
             }
-        },
-        waitForTick: function(ctx, ts, timeout) {
-            ctx.debug({
-                ts: ts, timeout: timeout, completedTick: completedTick, type: (typeof ts),
-            }, 'waitForTick')
-
-            if (typeof ts !== 'number')
-                throw new Error("invalid timestamp")
-
-            if (ts <= completedTick)
-                return Q(null)
-
-            if (timeout === undefined)
-                timeout = 120 // ms
-
-            var started_at = Date.now()
-            return Q.Promise(function(resolve, reject) {
-                function onTick(completedTick, delay) {
-                    if (!resolve)
-                        return
-
-                    if (ts <= completedTick) {
-                        resolve(delay)
-                        reject = null
-                    } else {
-                        self.events.once('tick', onTick)
-                    }
-                }
-               
-                setTimeout(function() {
-                    if (!reject)
-                        return
-
-                    reject('waitForTick timeout')
-                    resolve = null
-                }, timeout)
-
-                self.events.once('tick', onTick)
-            }).then(function(delay) {
-                ctx.debug({ ts: ts, delayed: delay, waited: Date.now() - started_at }, 'waitForTick:resolved')
-            })
         },
         processMessage: function() {
             var process_t = WTF.trace.events.createScope('processMessage')
@@ -264,8 +224,20 @@ module.exports = function(logger) {
             }))
         },
         getP: function(uuid) {
-            // Just to make some old code work
-            return Q(self.get(uuid))
+            var response = uuidGen.v1()
+            var redis = getSharedRedis()
+
+            logger.trace({ responseKey: response, uuid: uuid }, 'making a redis request')
+
+            return redis.rpush('requests', JSON.stringify({
+                response: response,
+                key: uuid
+            })).then(function() {
+                return redis.blpop(response, 0)
+            }).then(function(result) {
+                logger.trace({ responseKey: response, result: result[1].toString() }, 'redis request response')
+                return JSON.parse(result[1].toString())
+            })
         },
         get: function(uuid) {
             C.assertUUID(uuid)
