@@ -11,6 +11,11 @@ module.exports = {
         } else {
             var old = ws[uuid]
             if (old === undefined) {
+                if (!patch.type) {
+                    console.log(uuid, patch, ws)
+                    throw new Error("invalid patch")
+                }
+
                 old = ws[uuid] = {
                     uuid: uuid
                 }
