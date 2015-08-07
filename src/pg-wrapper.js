@@ -3,26 +3,17 @@
 var Q = require('q'),
     logging = require('spacebox-common/src/logging.js'),
     util = require('util'),
-    pg = require('pg'),
     pgpLib = require('pg-promise'),
-    uuidGen = require('node-uuid'),
-    custom_pool = require('./pg-pool')
+    uuidGen = require('node-uuid')
+
+var pgp = pgpLib({
+    promiseLib: Q
+})
+var pg = pgp.pg
+var pool
 
 pg.defaults.poolLog = false
 pg.defaults.poolIdleTimeout = 300000
-
-var this_cn, pool
-var pgp = pgpLib({
-    promiseLib: Q,
-    pgConnect: function(cn, cb) {
-        if (cn !== this_cn) {
-            console.log("wrong cn: "+cn)
-            process.exit()
-        }
-
-        pool.connect(cb)
-    }
-})
 
 function SqlError(query, sqlError) {
     Error.captureStackTrace(this, this.constructor)
@@ -62,17 +53,14 @@ ConnectionWrapper.extend = function(obj) {
 ConnectionWrapper.build = function(cn, ctx) {
     ctx.db_default = true
 
-    this_cn = cn
-    pool = ConnectionWrapper.pool = custom_pool.getOrCreate(this_cn)
+    pool = ConnectionWrapper.pool = pg.pools.getOrCreate(cn)
 
-    /*
     setInterval(function() {
         console.log({
             waitingClients: pool.waitingClientsCount(),
             availableObjectsCount: pool.availableObjectsCount()
         })
     }, 1000)
-    */
 
     return new ConnectionWrapper(pgp(cn), ctx)
 }
